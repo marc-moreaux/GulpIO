@@ -90,8 +90,9 @@ class GulpDirectory(object):
 
     """
 
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, encode_jpg=True):
         self.output_dir = output_dir
+        self.encode_jpg=encode_jpg
         self.chunk_objs_lookup = OrderedDict(zip(self._chunk_ids(), self._chunks()))
         self.all_meta_dicts = [c.meta_dict for c in self.chunk_objs_lookup.values()]
         self.num_chunks = len(self.chunk_objs_lookup)
@@ -116,7 +117,8 @@ class GulpDirectory(object):
         return self.__iter__()
 
     def _chunks(self):
-        return (GulpChunk(*paths) for paths in self._existing_file_paths())
+        return (GulpChunk(*paths, encode_jpg=self.encode_jpg) 
+                for paths in self._existing_file_paths())
 
     def new_chunks(self, total_new_chunks):
         """ Return a generator over freshly setup GulpChunk objects which are ready
@@ -127,7 +129,7 @@ class GulpDirectory(object):
         total_new_chunks: (int)
             The total number of new chunks to initialize.
         """
-        return ((GulpChunk(*paths) for paths in
+        return ((GulpChunk(*paths, encode_jpg=self.encode_jpg) for paths in
                  self._allocate_new_file_paths(total_new_chunks)))
 
     def __getitem__(self, element):
@@ -200,13 +202,15 @@ class GulpChunk(object):
     """
 
     def __init__(self, data_file_path, meta_file_path,
-                 serializer=json_serializer):
+                 serializer=json_serializer,
+                 encode_jpg=True):
         self.serializer = serializer
         self.data_file_path = data_file_path
         self.meta_file_path = meta_file_path
         self.meta_dict = self._get_or_create_dict()
         self._img_info = {}
         self.fp = None
+        self.encode_jpg = encode_jpg
 
     def __contains__(self, id_):
         return str(id_) in self.meta_dict
@@ -254,7 +258,9 @@ class GulpChunk(object):
 
     def _write_frame(self, id_, image):
         loc = self.fp.tell()
-        img_str = cv2.imencode('.jpg', image)[1].tostring()
+        if self.encode_jpg:
+            image = cv2.imencode('.jpg', image)[1]
+        img_str = image.tostring()
         assert len(img_str) > 0
         pad = self._pad_image(len(img_str))
         record = img_str.ljust(len(img_str) + pad, b'\0')
@@ -344,10 +350,12 @@ class GulpChunk(object):
             record = self.fp.read(frame_info.length)
             img_str = record[:len(record)-frame_info.pad]
             nparr = np.frombuffer(img_str, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_ANYCOLOR)
-            if img.ndim > 2:
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            return img
+            if self.encode_jpg:
+                img = cv2.imdecode(nparr, cv2.IMREAD_ANYCOLOR)
+                if img.ndim > 2:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                return img
+            return nparr
         frames = [extract_frame(frame_info)
                   for frame_info in frame_infos[slice_element]]
         return frames, meta_data
@@ -455,20 +463,24 @@ class GulpIngestor(object):
         The total number of items per chunk.
     num_workers: (int)
         The level of parallelism.
+    encode_jpg: (bool)
+        Encode the images in the chunk as jpg
 
     """
-    def __init__(self, adapter, output_folder, videos_per_chunk, num_workers):
+    def __init__(self, adapter, output_folder,
+                 videos_per_chunk, num_workers, encode_jpg=True):
         assert int(num_workers) > 0
         self.adapter = adapter
         self.output_folder = output_folder
         self.videos_per_chunk = int(videos_per_chunk)
         self.num_workers = int(num_workers)
+        self.encode_jpg = encode_jpg
 
     def __call__(self):
         os.makedirs(self.output_folder, exist_ok=True)
         chunk_slices = calculate_chunk_slices(self.videos_per_chunk,
                                               len(self.adapter))
-        gulp_directory = GulpDirectory(self.output_folder)
+        gulp_directory = GulpDirectory(self.output_folder, self.encode_jpg)
         new_chunks = gulp_directory.new_chunks(len(chunk_slices))
         chunk_writer = ChunkWriter(self.adapter)
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
