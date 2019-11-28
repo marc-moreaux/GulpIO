@@ -349,12 +349,13 @@ class GulpChunk(object):
             self.fp.seek(frame_info.loc)
             record = self.fp.read(frame_info.length)
             img_str = record[:len(record)-frame_info.pad]
-            nparr = np.frombuffer(img_str, np.uint8)
             if self.encode_jpg:
+                nparr = np.frombuffer(img_str, np.uint8)
                 img = cv2.imdecode(nparr, cv2.IMREAD_ANYCOLOR)
                 if img.ndim > 2:
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 return img
+            nparr = np.frombuffer(img_str, np.int16)
             return nparr
         frames = [extract_frame(frame_info)
                   for frame_info in frame_infos[slice_element]]
